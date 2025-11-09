@@ -118,7 +118,12 @@ static const struct of_device_id vs035_of_match[] = {
 MODULE_DEVICE_TABLE(of, vs035_of_match);
 
 static struct mipi_dsi_driver vs035_driver = {
-	
+	.probe	= vs035_probe,
+	.remove = vs035_remove,
+	.driver	= {
+		.name = "panel-vs035zsm",
+		.of_match_table = vs035_of_match,
+	}
 };
 
 module_mipi_dsi_driver(vs035_driver);
