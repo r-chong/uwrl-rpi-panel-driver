@@ -44,7 +44,7 @@ static int vs035_disable(struct drm_panel *panel) { return 0; }
 
 // placeholder porches/clock
 static int vs035_get_modes(struct drm_panel *panel, struct drm_connector *connector) {
-	struct drm_display_node *m = drm_mode_create(connector->dev);
+	struct drm_display_mode *m = drm_mode_create(connector->dev);
 	if (!m) return 0;
 
 	m->display	= 1440;
@@ -71,7 +71,7 @@ static const struct drm_panel_funcs vs035_funcs = {
 	.enable		= vs035_enable,
 	.disable	= vs035_disable,
 	.get_modes	= vs035_get_modes,
-}
+};
 
 // vs035 probe is init routine when MIPI-DSI first runs
 static int vs035_probe(struct mipi_dsi_device *dsi) {
@@ -107,13 +107,13 @@ static int vs035_probe(struct mipi_dsi_device *dsi) {
 
 static void vs035_remove(struct mipi_dsi_device *dsi) {
 	struct vs035_ctx *ctx = mipi_dsi_get_drvdata(dsi);
-	mipi_dsi_attach(dsi);
+	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 }
 
 static const struct of_device_id vs035_of_match[] = {
 	{ .compatible = "boe,v035zsm" }, { }
-}
+};
 
 MODULE_DEVICE_TABLE(of, vs035_of_match);
 
