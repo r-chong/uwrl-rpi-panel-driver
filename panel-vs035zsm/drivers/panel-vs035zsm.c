@@ -31,7 +31,7 @@ static int vs035_prepare(struct drm_panel *panel){
 	return 0;
 }
 
-static int vs035_unprepared(struct drm_panel *panel){
+static int vs035_unprepare(struct drm_panel *panel){
 	struct vs035_ctx *ctx = to_ctx(panel);
 	if (!ctx->prepared) return 0;
 	ctx->prepared = false;
@@ -47,7 +47,7 @@ static int vs035_get_modes(struct drm_panel *panel, struct drm_connector *connec
 	struct drm_display_mode *m = drm_mode_create(connector->dev);
 	if (!m) return 0;
 
-	m->display	= 1440;
+	m->hdisplay	= 1440;
 	m->hsync_start	= 1440 + 16; /* HFP */
 	m->hsync_end	= m->hsync_start + 8; /* HSYNC */
 	m->htotal	= m->hsync_end + 16; /* HBP */
