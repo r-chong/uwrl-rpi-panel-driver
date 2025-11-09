@@ -6,7 +6,10 @@
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 
-// context??
+// private driver's state for managing the display panel instance
+// Embeds a generic DRM panel structure
+// Stores a pointer to the underlying MIPI-DSI device
+// Tracks whether the panel is prepared (powered on)
 struct vs035_ctx {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
