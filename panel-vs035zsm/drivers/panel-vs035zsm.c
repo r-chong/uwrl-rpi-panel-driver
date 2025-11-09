@@ -24,7 +24,7 @@ static inline struct vs035_ctx *to_ctx(struct drm_panel *p) {
 
 // these functions don’t actually do anything, but they exist because the DRM panel driver framework expects them
 // (drm_panel_funcs uses them)
-static int vs035_prepare(struct drm_panel *panel){i
+static int vs035_prepare(struct drm_panel *panel){
 	struct vs035_ctx *ctx = to_ctx(panel);
 	if (ctx->prepared) return 0;
 	ctx->prepared = true;
@@ -73,15 +73,53 @@ static const struct drm_panel_funcs vs035_funcs = {
 	.get_modes	= vs035_get_modes,
 }
 
-static int vs035_probe(struct mipi_dsi_device *dsi) {}
+// vs035 probe is init routine when MIPI-DSI first runs
+static int vs035_probe(struct mipi_dsi_device *dsi) {
+	// create pointer to reference's member, dev
+	struct device *dev = &dsi->dev;
+	struct vs035_ctx *ctx;
+	int ret;
 
-static void vs035_remove(struct mipi_dsi_device *dsi) {}
+	// kzalloc - allocate memory on the heap all initialized to zero 
+	// devm is device-managed -automatic cleanup when device not used
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx) return -ENOMEM;
 
-static const struct of_device_id vs035_of_match[] = {}
+	ctx->dsi = dsi;
+	mipi_dsi_set_drvdata(dsi, ctx);
+
+	// from datasheet:
+	dsi->lanes		= 4;
+	dsi->format		= MIPI_DSI_FMT_RGB888;
+	dsi->mode_flags	= MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST;
+
+	drm_panel_init(&ctx->panel, dev, &vs035_funcs, DRM_MODE_CONNECTOR_DSI);
+	drm_panel_add(&ctx->panel);
+
+	ret = mipi_dsi_attach(dsi);
+
+	if (ret) {
+		drm_panel_remove(&ctx->panel);
+		return ret;
+	}
+	return 0;
+}
+
+static void vs035_remove(struct mipi_dsi_device *dsi) {
+	struct vs035_ctx *ctx = mipi_dsi_get_drvdata(dsi);
+	mipi_dsi_attach(dsi);
+	drm_panel_remove(&ctx->panel);
+}
+
+static const struct of_device_id vs035_of_match[] = {
+	{ .compatible = "boe,v035zsm" }, { }
+}
 
 MODULE_DEVICE_TABLE(of, vs035_of_match);
 
-static struct mipi_dsi_driver vs035_driver = {};
+static struct mipi_dsi_driver vs035_driver = {
+	
+};
 
 module_mipi_dsi_driver(vs035_driver);
 
