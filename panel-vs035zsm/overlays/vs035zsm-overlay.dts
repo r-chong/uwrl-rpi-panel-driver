@@ -1,0 +1,19 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+  compatible = "brcm,bcm2712";
+
+  fragment@0 {
+    target = <&rp1_dsi0>;   /* try rp1_dsi0 first */
+    __overlay__ {
+      status = "okay";
+
+      panel {
+        compatible = "boe,vs035zsm";
+        status = "okay";
+      };
+    };
+  };
+};
+
