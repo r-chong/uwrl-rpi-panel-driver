@@ -5,12 +5,15 @@
   compatible = "brcm,bcm2712";
 
   fragment@0 {
-    target = <&rp1_dsi0>;   /* try rp1_dsi0 first */
+    target = <&rp1_dsi0>;
     __overlay__ {
       status = "okay";
+      #address-cells = <1>;
+      #size-cells = <0>;
 
-      panel {
+      panel@0 {
         compatible = "boe,vs035zsm";
+        reg = <0>;
         status = "okay";
       };
     };
