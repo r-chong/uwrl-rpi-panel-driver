@@ -8,6 +8,7 @@
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 
+
 struct vs035_ctx {
     struct drm_panel panel;
     struct mipi_dsi_device *dsi;
@@ -69,7 +70,7 @@ static const struct drm_panel_funcs vs035_funcs = {
     .get_modes = vs035_get_modes,
 };
 
-/* DSI driver: bind with default link settings, no DCS */
+/* generic Linux driver model ------------------------------ */
 static int vs035_probe(struct mipi_dsi_device *dsi)
 {
     struct device *dev = &dsi->dev;
@@ -103,6 +104,8 @@ static void vs035_remove(struct mipi_dsi_device *dsi)
     mipi_dsi_detach(dsi);
     drm_panel_remove(&ctx->panel);
 }
+
+/* ------------------------------------------------------------ */
 
 /* OF match + driver boilerplate */
 static const struct of_device_id vs035_of_match[] = {
