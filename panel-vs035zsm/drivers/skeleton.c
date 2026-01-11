@@ -1,8 +1,14 @@
 #include <linux/module.h>
 #include <linux/of.h>
-#include <drm/drm_panel.h>
-#include <drm/drm_mipi_dsi.h>
+
+
 #include <drm/drm_modes.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_device.h>
+#include <drm/drm_edid.h>
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_panel.h>
+#include <drm/drm_of.h>
 
 static const struct of_device_id vs035_of_ids[] = {
 	{ .compatible = "raspberrypi,7inch-touchscreen-panel" },
@@ -21,17 +27,6 @@ static inline struct vs035_ctx *to_ctx(struct drm_panel *panel) {
     return container_of(panel, struct vs_035_ctx, panel);
 }
 
-static int vs035_probe(struct mipi_dsi_device *dsi) {
-    // To specify (random values for now):
-    dsi->lanes = 0;
-    dsi->format = MIPI_DSI_FMT_RGB565;
-    dsi->mode_flags = MIPI_DSI_MODE_VIDEO;
-
-    mipi_dsi_attach(dsi);
-
-    return 0;
-}
-static void vs035_remove(struct mipi_dsi_device *dsi) {}
 static int vs035_prepare(struct drm_panel *panel) { return 0; }
 static int vs035_unprepare(struct drm_panel *panel) { return 0; }
 static int vs035_enable(struct drm_panel *panel) { return 0; }
@@ -45,6 +40,41 @@ static const struct drm_panel_funcs vs035_funcs = {
     .disable   = vs035_disable,
     .get_modes = vs035_get_modes,
 };
+
+static int vs035_probe(struct mipi_dsi_device *dsi) {
+    
+    struct vs035_ctx *ctx;
+    int ret;
+
+    // Allocate memory for vs035_ctx object
+    ctx = devm_kzalloc(dsi, sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+        return -ENOMEM;
+    
+    // Set up drm_panel instance within vs035_ctx object
+    drm_panel_init(&ctx->panel, dsi, &vs035_funcs, DRM_MODE_CONNECTOR_DSI);
+
+    // Register panel instance with DRM panel framework
+    drm_panel_add(&(ctx->panel)); 
+
+    // Device-specific specification
+    dsi->lanes = 4;
+    dsi->format = MIPI_DSI_FMT_RGB888;
+    dsi->mode_flags = (MIPI_DSI_MODE_VIDEO | 
+                       MIPI_DSI_MODE_VIDEO_BURST | 
+                       MIPI_DSI_MODE_LPM);
+
+    ret = mipi_dsi_attach(dsi);
+
+    if (ret)
+		dev_err(&dsi->dev, "failed to attach dsi to host: %d\n", ret);
+    
+	return ret;
+}
+
+static void vs035_remove(struct mipi_dsi_device *dsi) {
+    struct vs035_ctx *ctx = mipi_dsi_get_drvdata(dsi);
+}
 
 static struct mipi_dsi_driver vs035_driver = {
     .driver = {
