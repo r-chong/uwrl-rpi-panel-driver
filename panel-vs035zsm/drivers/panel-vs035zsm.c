@@ -18,7 +18,25 @@
 struct vs035_ctx {
     struct drm_panel panel;
     struct mipi_dsi_device *dsi;
+    
+    /* Power / reset */
+    struct regulator *iovdd;          /* 1.8V I/O rail */
+    struct gpio_desc *iovdd_en_gpio;  /* alternatively can enable the pin to hardcode it */
+
+    struct gpio_desc *reset_gpio;     /* RESX (external reset pin which stops the chip from running, not necessarily preventing power off), active-low (meaning low voltage = ON) */
+
+    /* Bias rails (+5.7/-5.7) controlled by external IC */
+    struct regmap *bias_regmap;      
+    struct gpio_desc *bias_en_gpio;  
+    /* optional: pgood */
+    struct gpio_desc *bias_pgood_gpio;
+
+    /* Backlight */
+    struct backlight_device *backlight; 
+    struct gpio_desc *bl_en_gpio;        /* alternatively we just hardcode */
+
     bool prepared;
+    bool enabled;
 };
 
 static inline struct vs035_ctx *to_ctx(struct drm_panel *p)
@@ -28,9 +46,21 @@ static inline struct vs035_ctx *to_ctx(struct drm_panel *p)
 
 static int vs035_prepare(struct drm_panel *panel)
 {
-    // TODO: add reset sequencing
     struct vs035_ctx *ctx = to_ctx(panel);
+
+    // if already prepared, stop
     if (ctx->prepared) return 0;
+
+    // TODO: turn off I/O logic rail
+    // TODO: turn off analog bias rails
+    // TODO: hold panel/bridge while power unstable
+
+    // TODO: turn on I/O logic rail
+
+    // TODO: turn on bias/panel rails
+
+    // TODO: release reset
+    
     ctx->prepared = true;
     return 0;
 }
