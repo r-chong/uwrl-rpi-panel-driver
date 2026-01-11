@@ -8,7 +8,13 @@
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 
+/* =======================================================================
+ * DISPLAY LAYER (DRM panel API)
+ * - This is the interface the graphics stack (DRM/KMS) talks to.
+ * - DRM will call prepare/enable/get_modes/etc when it wants the panel on.
+ * ======================================================================= */
 
+ // Shared state used by both the display code and the driver code.
 struct vs035_ctx {
     struct drm_panel panel;
     struct mipi_dsi_device *dsi;
@@ -20,9 +26,9 @@ static inline struct vs035_ctx *to_ctx(struct drm_panel *p)
     return container_of(p, struct vs035_ctx, panel);
 }
 
-/* No-op power up/down (kept so the panel API is satisfied) */
 static int vs035_prepare(struct drm_panel *panel)
 {
+    // TODO: add reset sequencing
     struct vs035_ctx *ctx = to_ctx(panel);
     if (ctx->prepared) return 0;
     ctx->prepared = true;
@@ -70,19 +76,26 @@ static const struct drm_panel_funcs vs035_funcs = {
     .get_modes = vs035_get_modes,
 };
 
-/* generic Linux driver model ------------------------------ */
-static int vs035_probe(struct mipi_dsi_device *dsi)
-{
+/* =======================================================================
+ * DRIVER LAYER (Linux driver model + MIPI-DSI bus)
+ * - This is how the kernel binds your code to a DT node and calls probe().
+ * - probe() bridges DRIVER layer (DSI device) to DISPLAY layer (drm_panel).
+ * ======================================================================= */
+
+//
+static int vs035_probe(struct mipi_dsi_device *dsi) {
     struct device *dev = &dsi->dev;
     struct vs035_ctx *ctx;
     int ret;
 
+    // allocate and store state
     ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
     if (!ctx) return -ENOMEM;
 
     ctx->dsi = dsi;
     mipi_dsi_set_drvdata(dsi, ctx);
 
+    // TODO: verify DSI link parameters are set correctly
     dsi->lanes      = 4;
     dsi->format     = MIPI_DSI_FMT_RGB888;
     dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST;
@@ -105,9 +118,8 @@ static void vs035_remove(struct mipi_dsi_device *dsi)
     drm_panel_remove(&ctx->panel);
 }
 
-/* ------------------------------------------------------------ */
-
-/* OF match + driver boilerplate */
+// informally, our overlay adds "boe,vs035zsm" ("key") to the device tree on boot. Setting this param HERE associates "boe,vs035zsm" with this driver.
+// Thus, whenever the kernel boots, it uses this as the "value"
 static const struct of_device_id vs035_of_match[] = {
     { .compatible = "boe,vs035zsm" }, { }
 };
