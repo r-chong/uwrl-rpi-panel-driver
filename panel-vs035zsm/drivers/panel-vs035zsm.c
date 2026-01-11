@@ -112,7 +112,7 @@ static void vs035_remove(struct mipi_dsi_device *dsi) {
 }
 
 static const struct of_device_id vs035_of_match[] = {
-	{ .compatible = "boe,v035zsm" }, { }
+	{ .compatible = "boe,vs035zsm" }, { }
 };
 
 MODULE_DEVICE_TABLE(of, vs035_of_match);
