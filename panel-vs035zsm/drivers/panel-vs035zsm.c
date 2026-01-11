@@ -4,7 +4,7 @@
 
 #include <linux/module.h>
 #include <linux/of.h>
-#include <drm/>
+#include <drm/drm_panel.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 
