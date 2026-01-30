@@ -5,18 +5,91 @@
   compatible = "brcm,bcm2712";
 
   fragment@0 {
-    target = <&rp1_dsi0>;
-    __overlay__ {
-      status = "okay";
-      #address-cells = <1>;
-      #size-cells = <0>;
+		target = <&rp1_dsi0>;
+		__overlay__{
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port {
+				dsi_out_port: endpoint {
+					remote-endpoint = <&panel_dsi_port>;
+				};
+			};
 
-      panel@0 {
-        compatible = "boe,vs035zsm";
-        reg = <0>;
-        status = "okay";
-      };
-    };
-  };
+			vs035zsm_nw0_69p0:vs035zsm_nw0_69p0@0 {
+				compatible    = "boe,vs035zsm-nw0-69p0";
+				status        = "okay";
+				reg           = <0>;
+				port {
+					panel_dsi_port: endpoint {
+						remote-endpoint = <&dsi_out_port>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&rp1_dsi1>;
+		__overlay__{
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port {
+				dsi_out_port: endpoint {
+					remote-endpoint = <&panel_dsi_port>;
+				};
+			};
+
+			vs035zsm_nw0_69p0:vs035zsm_nw0_69p0@0 {
+				compatible    = "boe,vs035zsm-nw0-69p0";
+				status        = "okay";
+				reg           = <0>;
+				port {
+					panel_dsi_port: endpoint {
+						remote-endpoint = <&dsi_out_port>;
+					};
+				};
+			};
+		};
+	};
+
+    fragment@2 {
+		target = <&i2c_csi_dsi0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			vpos: vpos@00 {
+				compatible = "ti,tps65132-vpos";
+				reg = <0x00>;
+			};
+
+			vneg: vneg@01 {
+				compatible = "ti,tps65132-vneg";
+				reg = <0x01>;
+			};
+		};
+	};
+
+	fragment@3 {
+		target = <&i2c_csi_dsi1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			vpos: vpos@00 {
+				compatible = "ti,tps65132-vpos";
+				reg = <0x00>;
+			};
+
+			vneg: vneg@01 {
+				compatible = "ti,tps65132-vneg";
+				reg = <0x01>;
+			};
+		};
+	};
 };
 

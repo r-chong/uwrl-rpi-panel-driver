@@ -11,14 +11,23 @@
 #include <drm/drm_of.h>
 
 static const struct of_device_id vs035_of_ids[] = {
-	{ .compatible = "raspberrypi,7inch-touchscreen-panel" },
+	{ .compatible = "boe,vs035zsm-nw0-69p0" },
 	{ } /* sentinel */  // <- copied from rpi touchscreen, idk what this is
 };
 MODULE_DEVICE_TABLE(vs035_of_ids);
 
+static const struct of_device_id i2c_of_ids[] = {
+    { .compatible = "ti,tps65132-vpos"},  // Add compatible strings for both the VPOS and VNEG I2C addresses
+    { .compatible = "ti,tps65132-vneg"},
+    { }
+};
+MODULE_DEVICE_TABLE(i2c_of_ids);
+
 struct vs035_ctx {
     struct drm_panel panel;
     struct mipi_dsi_device *dsi;
+    struct i2c_client *vpos;
+    struct i2c_client *vneg;
     bool prepared;
     // Might need more stuff here...
 };
