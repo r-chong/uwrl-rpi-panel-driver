@@ -1,22 +1,93 @@
 /dts-v1/;
 /plugin/;
 
+/*
+ * VS035ZSM Panel Overlay for Raspberry Pi 5
+ *
+ * Based on vc4-kms-dsi-generic structure
+ * Uses DSI0 with 4 lanes, tps65132 regulator on I2C10
+ */
+
 / {
-  compatible = "brcm,bcm2712";
+	compatible = "brcm,bcm2712";
 
-  fragment@0 {
-    target = <&rp1_dsi0>;
-    __overlay__ {
-      status = "okay";
-      #address-cells = <1>;
-      #size-cells = <0>;
+	/* Fragment 0: Enable tps65132 on I2C10 */
+	fragment@0 {
+		target = <&i2c_csi_dsi0>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
 
-      panel@0 {
-        compatible = "boe,vs035zsm";
-        reg = <0>;
-        status = "okay";
-      };
-    };
-  };
+			tps65132: tps65132@3e {
+				compatible = "ti,tps65132";
+				reg = <0x3e>;
+
+				regulators {
+					tps65132_pos: outp {
+						regulator-name = "outp";
+						regulator-min-microvolt = <5700000>;
+						regulator-max-microvolt = <5700000>;
+					};
+
+					tps65132_neg: outn {
+						regulator-name = "outn";
+						regulator-min-microvolt = <5700000>;
+						regulator-max-microvolt = <5700000>;
+					};
+				};
+			};
+		};
+	};
+
+	/* Fragment 1: Enable DSI0 and add panel */
+	fragment@1 {
+		target = <&dsi0>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port {
+				dsi0_out: endpoint {
+					remote-endpoint = <&panel_dsi_in>;
+					data-lanes = <0 1 2 3>;
+					lane-polarities = <0 0 0 1 1>;
+				};
+			};
+
+			panel: panel@0 {
+				compatible = "boe,vs035zsm";
+				reg = <0>;
+				status = "okay";
+
+				/* Power supplies from tps65132 */
+				vpos-supply = <&tps65132_pos>;
+				vneg-supply = <&tps65132_neg>;
+
+				/* Reset GPIO - GPIO34 on RP1 */
+				reset-gpios = <&gpio 34 0>;  /* 0 = GPIO_ACTIVE_HIGH */
+
+				port {
+					panel_dsi_in: endpoint {
+						data-lanes = <1 2 3 4>;
+						remote-endpoint = <&dsi0_out>;
+					};
+				};
+
+				/* Panel timing for VS035ZSM */
+				panel-timing {
+					clock-frequency = <169296000>;
+					hactive = <1440>;
+					vactive = <1600>;
+					hback-porch = <80>;
+					hfront-porch = <80>;
+					hsync-len = <40>;
+					vback-porch = <40>;
+					vfront-porch = <40>;
+					vsync-len = <40>;
+				};
+			};
+		};
+	};
 };
-
