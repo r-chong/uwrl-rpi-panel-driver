@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * VS035ZSM Panel Minimal Test Driver
+ * BOE VS035ZSM MIPI DSI Panel Driver
  *
- * Minimal driver to:
- * 1. Power on display via tps65132 regulator (±5.7V)
- * 2. Assert reset GPIO
- * 3. Read display ID via MIPI DCS LP mode
+ * 1440x1600 @ 60Hz, 4-lane MIPI DSI, RGB888, Video Burst Mode
+ * Uses TPS65132 for ±5.7V bias supply (direct I2C programming)
+ *
+ * Ported from SSD2828 reference implementation.
  */
-
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
+#include <linux/i2c.h>
+#include <linux/pwm.h>
 
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
@@ -22,7 +23,14 @@ struct vs035zsm {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
 	struct gpio_desc *reset_gpio;
+	struct gpio_desc *vddio_gpio;
+	struct gpio_desc *vpos_gpio;   /* TPS65132 ENP */
+	struct gpio_desc *vneg_gpio;   /* TPS65132 ENN */
+	struct pwm_device *pwm;
+	struct i2c_client *tps_client;
+	struct i2c_adapter *tps_adap;
 	bool prepared;
+	bool enabled;
 };
 
 static inline struct vs035zsm *panel_to_vs035zsm(struct drm_panel *panel)
@@ -30,76 +38,419 @@ static inline struct vs035zsm *panel_to_vs035zsm(struct drm_panel *panel)
 	return container_of(panel, struct vs035zsm, panel);
 }
 
-static int vs035zsm_read_display_info(struct vs035zsm *ctx)
+#define TPS65132_REG_VPOS    0x00
+#define TPS65132_REG_VNEG    0x01
+#define TPS65132_REG_CTL     0xFF
+#define TPS65132_VOLTAGE_57V 0x11
+
+static int vs035zsm_tps65132_check_and_program(struct vs035zsm *ctx)
 {
-	struct mipi_dsi_device *dsi = ctx->dsi;
-	u8 id[3] = {0};
-	u8 power_mode = 0;
-	u8 address_mode = 0;
-	int ret;
+	struct device *dev = &ctx->dsi->dev;
+	struct i2c_client *client = ctx->tps_client;
+	int vpos, vneg, ret;
 
-	/* Read Display ID (DCS command 0x04) - returns 3 bytes */
-	ret = mipi_dsi_dcs_read(dsi, 0x04, id, sizeof(id));
-	if (ret < 0) {
-		dev_err(&dsi->dev, "Failed to read display ID: %d\n", ret);
-	} else {
-		dev_info(&dsi->dev, "Display ID: %02x %02x %02x\n",
-			 id[0], id[1], id[2]);
+	if (!client)
+		return -ENODEV;
+
+	vpos = i2c_smbus_read_byte_data(client, TPS65132_REG_VPOS);
+	vneg = i2c_smbus_read_byte_data(client, TPS65132_REG_VNEG);
+
+	if (vpos < 0 || vneg < 0) {
+		dev_err(dev, "TPS65132 read failed: vpos=%d vneg=%d\n",
+			vpos, vneg);
+		return vpos < 0 ? vpos : vneg;
 	}
 
-	/* Read Power Mode (DCS command 0x0A) - returns 1 byte */
-	ret = mipi_dsi_dcs_read(dsi, 0x0A, &power_mode, 1);
-	if (ret < 0) {
-		dev_err(&dsi->dev, "Failed to read power mode: %d\n", ret);
-	} else {
-		dev_info(&dsi->dev, "Power Mode: 0x%02x\n", power_mode);
-	}
+	dev_info(dev, "TPS65132: VPOS=0x%02x VNEG=0x%02x\n", vpos, vneg);
 
-	/* Read Address Mode (DCS command 0x0B) - returns 1 byte */
-	ret = mipi_dsi_dcs_read(dsi, 0x0B, &address_mode, 1);
-	if (ret < 0) {
-		dev_err(&dsi->dev, "Failed to read address mode: %d\n", ret);
-	} else {
-		dev_info(&dsi->dev, "Address Mode: 0x%02x\n", address_mode);
-	}
+	if (vpos == TPS65132_VOLTAGE_57V && vneg == TPS65132_VOLTAGE_57V)
+		return 0;
+
+	dev_info(dev, "TPS65132: programming 5.7V + EEPROM burn\n");
+
+	ret = i2c_smbus_write_byte_data(client, TPS65132_REG_VPOS,
+					TPS65132_VOLTAGE_57V);
+	if (ret)
+		return ret;
+
+	ret = i2c_smbus_write_byte_data(client, TPS65132_REG_VNEG,
+					TPS65132_VOLTAGE_57V);
+	if (ret)
+		return ret;
+
+	ret = i2c_smbus_write_byte_data(client, TPS65132_REG_CTL, 0x80);
+	if (ret)
+		return ret;
+
+	msleep(50);
+
+	vpos = i2c_smbus_read_byte_data(client, TPS65132_REG_VPOS);
+	vneg = i2c_smbus_read_byte_data(client, TPS65132_REG_VNEG);
+	dev_info(dev, "TPS65132 verify: VPOS=0x%02x VNEG=0x%02x\n",
+		 vpos, vneg);
 
 	return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Panel init sequence — ported from VS035ZSM_start()                 */
+/* All commands sent in LP mode (host handles this via MODE_LPM flag) */
+/* ------------------------------------------------------------------ */
+static int vs035zsm_init_sequence(struct vs035zsm *ctx)
+{
+	struct mipi_dsi_device *dsi = ctx->dsi;
+	struct device *dev = &dsi->dev;
+	int ret;
+
+	dev_info(dev, "vs035zsm_init_sequence\n");
+
+	/* --- HSSRAM parameter (page 0xE0) --- */
+	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0xE0}, 1);
+	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);  /* RELOAD */
+	mipi_dsi_dcs_write(dsi, 0x53, (u8[]){0x22}, 1);
+
+	/* --- CDM2 settings (page 0x25) --- */
+	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x25}, 1);
+	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+	mipi_dsi_dcs_write(dsi, 0x65, (u8[]){0x01}, 1);
+	mipi_dsi_dcs_write(dsi, 0x66, (u8[]){0x50}, 1);
+	mipi_dsi_dcs_write(dsi, 0x67, (u8[]){0x55}, 1);  /* 10% duty cycle setting */
+	mipi_dsi_dcs_write(dsi, 0xC4, (u8[]){0x90}, 1);
+
+	/* --- Page 0x26 settings --- */
+	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x26}, 1);
+	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+	mipi_dsi_dcs_write(dsi, 0x02, (u8[]){0xB5}, 1);
+	mipi_dsi_dcs_write(dsi, 0x4D, (u8[]){0x8B}, 1);
+
+	/* --- User command set (page 0x10) --- */
+	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x10}, 1);
+	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+
+	/* VESA DSC setting */
+	mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x80}, 1); // original, seems to enable DSC
+	// mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+
+	/*
+	 * NOTE: These two generic long writes were commented out in the
+	 * SSD2828 reference code. Including them here since they appear
+	 * to be DSC-related config. Remove if display misbehaves.
+	 *
+	 * 0x3B with payload {0x00, 0x0A, 0x00, 0x0A}
+	 * 0xBE with payload {0x00, 0x0A, 0x00, 0x0A}
+	 */
+	// mipi_dsi_generic_write(dsi, (u8[]){0x3B, 0x00, 0x0A, 0x00, 0x0A}, 5);
+	// mipi_dsi_generic_write(dsi, (u8[]){0xBE, 0x00, 0x0A, 0x00, 0x0A}, 5);
+
+	/* Compression / stream config */
+	mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x13}, 1); // original, seems to enable DSC
+	// mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+
+	/*
+	 * BA register: 0x30 = dual port, 0x07 = single port
+	 * Using single port for our setup.
+	 */
+	mipi_dsi_dcs_write(dsi, 0xBA, (u8[]){0x07}, 1);
+
+	/* Tear effect on (TE pin output) */
+	mipi_dsi_dcs_write(dsi, 0x35, (u8[]){0x00}, 1);
+
+	/* Address mode: normal scan */
+	mipi_dsi_dcs_write(dsi, 0x36, (u8[]){0x00}, 1);
+
+	/*
+	 * Page address set (0x2B): rows 0 to 1600 (0x0640)
+	 * The SSD2828 reference labels this "PARTIAL_RES_X" but
+	 * 0x2B is PASET which sets the vertical range.
+	 */
+	{
+		u8 payload[] = {0x00, 0x00, 0x06, 0x40};
+		// mipi_dsi_dcs_write(dsi, 0x2B, payload, 4);
+	}
+
+	/* In init sequence, after page 0x10 select and RELOAD */
+	{
+		u8 readback = 0xFF;
+
+		/* Try to disable DSC */
+		mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+		msleep(10);
+		mipi_dsi_dcs_read(dsi, 0xC0, &readback, 1);
+		dev_info(dev, "0xC0 after write 0x00: 0x%02x\n", readback);
+
+		mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+		msleep(10);
+		mipi_dsi_dcs_read(dsi, 0xBB, &readback, 1);
+		dev_info(dev, "0xBB after write 0x03: 0x%02x\n", readback);
+	}
+
+	/* Also read compression mode via standard DCS command */
+	{
+		u8 comp_mode = 0xFF;
+		mipi_dsi_dcs_read(dsi, 0x03, &comp_mode, 1);
+		dev_info(dev, "Get compression mode for DCS (0x03): 0x%02x\n", comp_mode);
+	}
+
+	{
+		u8 ba_val = 0xFF;
+		mipi_dsi_dcs_read(dsi, 0xBA, &ba_val, 1);
+		dev_info(dev, "Port config (0xBA): 0x%02x\n", ba_val);
+	}
+
+	/* Sleep Out */
+	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to exit sleep mode: %d\n", ret);
+		return ret;
+	}
+
+	/* SSD2828 reference waits 200ms here */
+	msleep(200);
+
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* DRM panel callbacks                                                */
+/* ------------------------------------------------------------------ */
 
 static int vs035zsm_prepare(struct drm_panel *panel)
 {
 	struct vs035zsm *ctx = panel_to_vs035zsm(panel);
 	struct device *dev = &ctx->dsi->dev;
-	
+	// struct mipi_dsi_device *dsi = ctx->dsi;
+	int ret;
+
 	if (ctx->prepared)
 		return 0;
 
-	/* Step 3: Wait 120ms */
-	msleep(120);
+	/*
+	 * Power-on sequence per panel spec:
+	 *
+	 * 1. VDDIO (1.8V logic) must be up first
+	 * 2. VPOS (ENP HIGH) — TPS65132 wakes, loads EEPROM, starts VPOS
+	 * 3. VNEG (ENN HIGH) — starts VNEG rail
+	 * 4. Wait for supplies to stabilize
+	 * 5. Check/program TPS65132 via I2C (chip is alive after ENP HIGH)
+	 * 6. Assert reset
+	 * 7. Init sequence
+	 */
 
-	/* Step 4: Assert reset (pull high) */
+	/* 1. VDDIO */
+	if (ctx->vddio_gpio)
+		gpiod_set_value_cansleep(ctx->vddio_gpio, 1);
+	msleep(50);
+
+	/* 2. ENP — TPS65132 starts, loads EEPROM into DAC */
+	if (ctx->vpos_gpio)
+		gpiod_set_value_cansleep(ctx->vpos_gpio, 1);
+	msleep(50);
+
+	/* 3. ENN */
+	if (ctx->vneg_gpio)
+		gpiod_set_value_cansleep(ctx->vneg_gpio, 1);
+	msleep(50);  /* TPS65132 soft-start + stabilization */
+
+	/* 4. Verify/program TPS65132 — only needed once, saved to EEPROM */
+	ret = vs035zsm_tps65132_check_and_program(ctx);
+	if (ret)
+		dev_warn(dev, "TPS65132 check failed: %d (continuing)\n", ret);
+
+	msleep(50);
+	
+	/* 5. Assert reset (active high, held high for operation) */
 	if (ctx->reset_gpio) {
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		msleep(10);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		dev_info(dev, "Reset GPIO asserted (high)\n");
 	}
+	msleep(200);
 
-	/* Step 5: Wait for display to stabilize (per example code: 25ms) */
-	msleep(100);
+	
 
 	ctx->prepared = true;
-
-	/* Read display info via MIPI LP mode */
-	dev_info(dev, "Reading display information via MIPI LP mode...\n");
-	vs035zsm_read_display_info(ctx);
-
 	return 0;
 
+err_power_off:
+	if (ctx->reset_gpio)
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	msleep(5);
+	if (ctx->vneg_gpio)
+		gpiod_set_value_cansleep(ctx->vneg_gpio, 0);
+	msleep(5);
+	if (ctx->vpos_gpio)
+		gpiod_set_value_cansleep(ctx->vpos_gpio, 0);
+	msleep(5);
+	if (ctx->vddio_gpio)
+		gpiod_set_value_cansleep(ctx->vddio_gpio, 0);
+	return ret;
+}
+
+static int vs035zsm_enable(struct drm_panel *panel)
+{
+	struct vs035zsm *ctx = panel_to_vs035zsm(panel);
+	struct device *dev = &ctx->dsi->dev;
+	int ret;
+
+	dev_info(dev, "vs035zsm_enable\n");
+
+	if (ctx->enabled)
+		return 0;
+
+
+	// u8 id[3] = {0};
+    // u8 power_mode = 0;
+
+	// /* === Test 1: DCS read without page select (original) === */
+    // ret = mipi_dsi_dcs_read(ctx->dsi, 0x04, id, sizeof(id));
+    // dev_info(&ctx->dsi->dev, "DCS read 0x04 (no page): ret=%d id=%02x %02x %02x\n",
+    //      ret, id[0], id[1], id[2]);
+    // /* === Test 2: Select user command page first, then DCS read === */
+    // ret = mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
+    // dev_info(&ctx->dsi->dev, "Page select 0xFF=0x10: ret=%d\n", ret);
+    // msleep(50);
+    // memset(id, 0, sizeof(id));
+    // ret = mipi_dsi_dcs_read(ctx->dsi, 0x04, id, sizeof(id));
+    // dev_info(&ctx->dsi->dev, "DCS read 0x04 (page 0x10): ret=%d id=%02x %02x %02x\n",
+    //      ret, id[0], id[1], id[2]);
+    // /* === Test 3: Generic read instead of DCS read === */
+    // memset(id, 0, sizeof(id));
+    // {
+    //     u8 cmd = 0x04;
+    //     ret = mipi_dsi_generic_read(ctx->dsi, &cmd, 1, id, sizeof(id));
+    //     dev_info(&ctx->dsi->dev, "Generic read 0x04: ret=%d id=%02x %02x %02x\n",
+    //          ret, id[0], id[1], id[2]);
+    // }
+    // /* === Test 4: Generic read power mode === */
+    // {
+    //     u8 cmd = 0x0A;
+    //     ret = mipi_dsi_generic_read(ctx->dsi, &cmd, 1, &power_mode, 1);
+    //     dev_info(&ctx->dsi->dev, "Generic read 0x0A: ret=%d val=0x%02x\n",
+    //          ret, power_mode);
+    // }
+
+	/* 6. Init sequence */
+	ret = vs035zsm_init_sequence(ctx);
+	if (ret) {
+		dev_err(dev, "Init sequence failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Select user command page before display on */
+	mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
+
+	
+
+	/* Display On */
+	ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to set display on: %d\n", ret);
+		return ret;
+	}
+
+	ret = mipi_dsi_turn_on_peripheral(ctx->dsi);
+	if (ret) {
+		dev_err(dev, "failed to turn on peripheral\n");
+
+	}
+
+	{
+    u8 power_mode = 0;
+    u8 display_status[5] = {0};
+    u8 signal_mode = 0;
+    u8 pixel_fmt = 0;
+
+    /* 0x0A: Power mode — expect 0x14 after sleep-out (sleep out + normal mode) */
+    mipi_dsi_dcs_read(ctx->dsi, 0x0A, &power_mode, 1);
+    dev_info(dev, "Power mode (0x0A): 0x%02x\n", power_mode);
+
+    /* 0x0E: Display self-diagnostic */
+    mipi_dsi_dcs_read(ctx->dsi, 0x0E, &signal_mode, 1);
+    dev_info(dev, "Self-diag (0x0E): 0x%02x\n", signal_mode);
+
+    /* 0x0C: Pixel format — shows what panel thinks it's receiving */
+    mipi_dsi_dcs_read(ctx->dsi, 0x0C, &pixel_fmt, 1);
+    dev_info(dev, "Pixel format (0x0C): 0x%02x\n", pixel_fmt);
+	/* 0x09: Display status — 5 bytes, shows detailed panel state */
+	mipi_dsi_dcs_read(ctx->dsi, 0x09, display_status, 5);
+	dev_info(dev, "Display status (0x09): %02x %02x %02x %02x %02x\n",
+         display_status[0], display_status[1], display_status[2],
+         display_status[3], display_status[4]);
+	}
+
+	{
+    u8 dsc_en = 0xFF;
+    u8 bb_val = 0xFF;
+
+    mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
+    msleep(5);
+    mipi_dsi_dcs_read(ctx->dsi, 0xC0, &dsc_en, 1);
+    mipi_dsi_dcs_read(ctx->dsi, 0xBB, &bb_val, 1);
+    dev_info(dev, "DSC enable (0xC0): 0x%02x  Compression (0xBB): 0x%02x\n",
+             dsc_en, bb_val);
+	}
+
+	{
+    /* Set column address: 0 to 1439 */
+    u8 caset[] = {0x00, 0x00, 0x05, 0x9F};
+    mipi_dsi_dcs_write(ctx->dsi, 0x2A, caset, 4);
+
+    /* Set page address: 0 to 1599 */
+    u8 paset[] = {0x00, 0x00, 0x06, 0x3F};
+    mipi_dsi_dcs_write(ctx->dsi, 0x2B, paset, 4);
+
+    /* Write a small block of white pixels via memory write */
+    u8 pixels[64];
+    memset(pixels, 0xFF, sizeof(pixels));
+    mipi_dsi_dcs_write(ctx->dsi, 0x2C, pixels, sizeof(pixels));
+    dev_info(dev, "Sent test pixels via command mode\n");
+	}
+
+
+
+	/* SSD2828 reference: wait >= 40ms + 40ms */
+	msleep(80);
+
+	ctx->enabled = true;
+	dev_info(dev, "Display enabled\n");
+	return 0;
+}
+
+static int vs035zsm_disable(struct drm_panel *panel)
+{
+	struct vs035zsm *ctx = panel_to_vs035zsm(panel);
+	struct device *dev = &ctx->dsi->dev;
+	int ret;
+
+	dev_info(dev, "vs035zsm_disable\n");
+
+	if (!ctx->enabled)
+		return 0;
+
+	/* Display Off */
+	ret = mipi_dsi_dcs_set_display_off(ctx->dsi);
+	if (ret < 0)
+		dev_warn(dev, "Failed to set display off: %d\n", ret);
+
+	msleep(20);
+
+	/* Enter Sleep */
+	ret = mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
+	if (ret < 0)
+		dev_warn(dev, "Failed to enter sleep mode: %d\n", ret);
+
+	/* Must wait >= 120ms after sleep in per MIPI spec */
+	msleep(120);
+
+	ctx->enabled = false;
 	return 0;
 }
 
 static int vs035zsm_unprepare(struct drm_panel *panel)
 {
 	struct vs035zsm *ctx = panel_to_vs035zsm(panel);
+
+	dev_info(&ctx->dsi->dev, "vs035zsm_unprepare\n");
 
 	if (!ctx->prepared)
 		return 0;
@@ -110,36 +461,46 @@ static int vs035zsm_unprepare(struct drm_panel *panel)
 
 	msleep(10);
 
-	ctx->prepared = false;
+	/*
+	 * TODO: Power down TPS65132 (reverse order: VNEG then VPOS to 0,
+	 * or use enable GPIO / regulator framework). For now the supplies
+	 * stay on.
+	 */
 
+	ctx->prepared = false;
 	return 0;
 }
 
 static int vs035zsm_get_modes(struct drm_panel *panel,
 			      struct drm_connector *connector)
 {
+	struct vs035zsm *ctx = panel_to_vs035zsm(panel);
+	dev_info(&ctx->dsi->dev, "vs035zsm_get_modes\n");
 	/*
-	 * VS035ZSM Display Timing:
-	 * Resolution: 1440 x 1600
-	 * Active area: 59.4 x 66.0 mm
-	 * HSYNC=40, HFP=80, HBP=80
-	 * VSYNC=40, VFP=40, VBP=40
-	 * htotal = 1440 + 80 + 40 + 80 = 1640
-	 * vtotal = 1600 + 40 + 40 + 40 = 1720
+	 * VS035ZSM native timing:
+	 *   1440 x 1600 @ 60 Hz
+	 *   HSYNC=40  HFP=80  HBP=80  → htotal=1640
+	 *   VSYNC=40  VFP=40  VBP=40  → vtotal=1720
+	 *   pixel clock = 1640 * 1720 * 60 / 1000 = 169,296 kHz
+	 *
+	 * SSD2828 reference PLL: 912 MHz for 4 lanes
+	 *   lane rate = 912 Mbps/lane → total = 3648 Mbps
+	 *   RGB888 = 24 bpp → 3648 / 24 = 152 Mpix/s effective
+	 *   In burst mode this is fine for ~169 Mpix/s active + blanking
 	 */
 	static const struct drm_display_mode mode = {
-		.clock = 169296,        /* htotal * vtotal * 60Hz / 1000 */
-		.hdisplay = 1440,
-		.hsync_start = 1440 + 80,       /* hdisplay + HFP */
-		.hsync_end = 1440 + 80 + 40,    /* + HSYNC */
-		.htotal = 1440 + 80 + 40 + 80,  /* + HBP = 1640 */
-		.vdisplay = 1600,
-		.vsync_start = 1600 + 40,       /* vdisplay + VFP */
-		.vsync_end = 1600 + 40 + 40,    /* + VSYNC */
-		.vtotal = 1600 + 40 + 40 + 40,  /* + VBP = 1720 */
-		.width_mm = 59,
-		.height_mm = 66,
-		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+		.clock       = 84624,
+		.hdisplay    = 1440,
+		.hsync_start = 1440 + 80,
+		.hsync_end   = 1440 + 80 + 40,
+		.htotal      = 1440 + 80 + 40 + 80,
+		.vdisplay    = 1600,
+		.vsync_start = 1600 + 40,
+		.vsync_end   = 1600 + 40 + 40,
+		.vtotal      = 1600 + 40 + 40 + 40,
+		.width_mm    = 59,
+		.height_mm   = 66,
+		.type        = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 	};
 	struct drm_display_mode *m;
 
@@ -158,16 +519,27 @@ static int vs035zsm_get_modes(struct drm_panel *panel,
 }
 
 static const struct drm_panel_funcs vs035zsm_panel_funcs = {
-	.prepare = vs035zsm_prepare,
+	.prepare   = vs035zsm_prepare,
+	.enable    = vs035zsm_enable,
+	.disable   = vs035zsm_disable,
 	.unprepare = vs035zsm_unprepare,
 	.get_modes = vs035zsm_get_modes,
 };
+
+/* ------------------------------------------------------------------ */
+/* MIPI DSI driver probe / remove                                     */
+/* ------------------------------------------------------------------ */
 
 static int vs035zsm_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
 	struct vs035zsm *ctx;
 	int ret;
+	struct i2c_board_info tps_info = {
+		I2C_BOARD_INFO("tps65132_raw", 0x3e),
+	};
+
+	dev_info(dev, "VS035ZSM driver compiled on %s\n", BUILD_TIMESTAMP);
 
 	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -176,33 +548,90 @@ static int vs035zsm_probe(struct mipi_dsi_device *dsi)
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 
-	/* Get reset GPIO */
+	/* Power GPIOs — all start LOW (off) */
+	ctx->vddio_gpio = devm_gpiod_get_optional(dev, "vddio", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->vddio_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->vddio_gpio),
+				     "Failed to get vddio GPIO\n");
+
+	ctx->vpos_gpio = devm_gpiod_get_optional(dev, "vpos", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->vpos_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->vpos_gpio),
+				     "Failed to get vpos GPIO\n");
+
+	ctx->vneg_gpio = devm_gpiod_get_optional(dev, "vneg", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->vneg_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->vneg_gpio),
+				     "Failed to get vneg GPIO\n");
+
 	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(ctx->reset_gpio)) {
-		ret = PTR_ERR(ctx->reset_gpio);
-		dev_err(dev, "Failed to get reset GPIO: %d\n", ret);
-		return ret;
+	if (IS_ERR(ctx->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
+				     "Failed to get reset GPIO\n");
+
+	/* TPS65132 I2C — create client now, communicate later in prepare */
+	ctx->tps_adap = i2c_get_adapter(10);
+	if (!ctx->tps_adap) {
+		dev_warn(dev, "No I2C adapter 10 — TPS65132 control unavailable\n");
+	} else {
+		ctx->tps_client = i2c_new_client_device(ctx->tps_adap, &tps_info);
+		if (IS_ERR(ctx->tps_client)) {
+			dev_warn(dev, "Failed to create TPS65132 client: %ld\n",
+				 PTR_ERR(ctx->tps_client));
+			ctx->tps_client = NULL;
+			i2c_put_adapter(ctx->tps_adap);
+			ctx->tps_adap = NULL;
+		}
 	}
 
-	/* Configure MIPI DSI */
-	dsi->lanes = 4;
-	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM;
+	/* PWM backlight */
+	ctx->pwm = devm_pwm_get(dev, NULL);
+	if (IS_ERR(ctx->pwm)) {
+		ret = PTR_ERR(ctx->pwm);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_warn(dev, "No PWM backlight: %d\n", ret);
+		ctx->pwm = NULL;
+	}
+
+	if (ctx->pwm) {
+		struct pwm_state state;
+		pwm_init_state(ctx->pwm, &state);
+		state.period     = 20000;
+		state.duty_cycle = 1000;
+		state.enabled    = true;
+		ret = pwm_apply_might_sleep(ctx->pwm, &state);
+		if (ret) {
+			dev_err(dev, "Failed to apply PWM: %d\n", ret);
+			return ret;
+		}
+	}
+
+	dsi->lanes      = 4;
+	dsi->format     = MIPI_DSI_FMT_RGB888;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO
+			| MIPI_DSI_MODE_VIDEO_BURST
+			| MIPI_DSI_MODE_LPM;
+	// dsi->mode_flags = MIPI_DSI_MODE_LPM;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO
+				| MIPI_DSI_MODE_VIDEO_BURST
+				| MIPI_DSI_MODE_LPM
+				| MIPI_DSI_CLOCK_NON_CONTINUOUS;
+	// dsi->hs_rate    = 700000000;
+	// dsi->lp_rate    = 1000000;
 
 	drm_panel_init(&ctx->panel, dev, &vs035zsm_panel_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
-
 	drm_panel_add(&ctx->panel);
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret) {
-		dev_err(dev, "Failed to attach to DSI host: %d\n", ret);
+		dev_err(dev, "Failed to attach DSI: %d\n", ret);
 		drm_panel_remove(&ctx->panel);
 		return ret;
 	}
 
-	dev_info(dev, "VS035ZSM panel driver probed successfully\n");
-
+	dev_info(dev, "VS035ZSM probed\n");
 	return 0;
 }
 
@@ -210,8 +639,19 @@ static void vs035zsm_remove(struct mipi_dsi_device *dsi)
 {
 	struct vs035zsm *ctx = mipi_dsi_get_drvdata(dsi);
 
+	dev_info(&dsi->dev, "vs035zsm_remove\n");
+
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
+
+	/* Kill backlight */
+	if (ctx->pwm) {
+		struct pwm_state state;
+
+		pwm_get_state(ctx->pwm, &state);
+		state.enabled = false;
+		pwm_apply_might_sleep(ctx->pwm, &state);
+	}
 }
 
 static const struct of_device_id vs035zsm_of_match[] = {
@@ -222,14 +662,13 @@ MODULE_DEVICE_TABLE(of, vs035zsm_of_match);
 
 static struct mipi_dsi_driver vs035zsm_driver = {
 	.driver = {
-		.name = "panel-vs035zsm",
+		.name           = "panel-vs035zsm",
 		.of_match_table = vs035zsm_of_match,
 	},
-	.probe = vs035zsm_probe,
+	.probe  = vs035zsm_probe,
 	.remove = vs035zsm_remove,
 };
 module_mipi_dsi_driver(vs035zsm_driver);
 
-MODULE_AUTHOR("VS035ZSM Test Driver");
-MODULE_DESCRIPTION("Minimal VS035ZSM MIPI DSI Panel Test Driver");
+MODULE_DESCRIPTION("BOE VS035ZSM MIPI DSI Panel Driver");
 MODULE_LICENSE("GPL");
