@@ -34,7 +34,7 @@
 				dsi0_out: endpoint {
 					remote-endpoint = <&panel_dsi_in>;
 					data-lanes = <0 1 2 3>;
-					lane-polarities = <0 0 1 1 1>;
+					lane-polarities = <0 0 0 1 1>;
 				};
 			};
 

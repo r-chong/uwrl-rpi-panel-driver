@@ -128,8 +128,8 @@ static int vs035zsm_init_sequence(struct vs035zsm *ctx)
 	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
 
 	/* VESA DSC setting */
-	mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x80}, 1); // original, seems to enable DSC
-	// mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+	// mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x80}, 1); // original, seems to enable DSC
+	mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
 
 	/*
 	 * NOTE: These two generic long writes were commented out in the
@@ -143,8 +143,8 @@ static int vs035zsm_init_sequence(struct vs035zsm *ctx)
 	// mipi_dsi_generic_write(dsi, (u8[]){0xBE, 0x00, 0x0A, 0x00, 0x0A}, 5);
 
 	/* Compression / stream config */
-	mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x13}, 1); // original, seems to enable DSC
-	// mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+	// mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x13}, 1); // original, seems to enable DSC
+	mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
 
 	/*
 	 * BA register: 0x30 = dual port, 0x07 = single port
@@ -292,124 +292,45 @@ static int vs035zsm_enable(struct drm_panel *panel)
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
-	dev_info(dev, "vs035zsm_enable\n");
-
 	if (ctx->enabled)
 		return 0;
 
-
-	// u8 id[3] = {0};
-    // u8 power_mode = 0;
-
-	// /* === Test 1: DCS read without page select (original) === */
-    // ret = mipi_dsi_dcs_read(ctx->dsi, 0x04, id, sizeof(id));
-    // dev_info(&ctx->dsi->dev, "DCS read 0x04 (no page): ret=%d id=%02x %02x %02x\n",
-    //      ret, id[0], id[1], id[2]);
-    // /* === Test 2: Select user command page first, then DCS read === */
-    // ret = mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
-    // dev_info(&ctx->dsi->dev, "Page select 0xFF=0x10: ret=%d\n", ret);
-    // msleep(50);
-    // memset(id, 0, sizeof(id));
-    // ret = mipi_dsi_dcs_read(ctx->dsi, 0x04, id, sizeof(id));
-    // dev_info(&ctx->dsi->dev, "DCS read 0x04 (page 0x10): ret=%d id=%02x %02x %02x\n",
-    //      ret, id[0], id[1], id[2]);
-    // /* === Test 3: Generic read instead of DCS read === */
-    // memset(id, 0, sizeof(id));
-    // {
-    //     u8 cmd = 0x04;
-    //     ret = mipi_dsi_generic_read(ctx->dsi, &cmd, 1, id, sizeof(id));
-    //     dev_info(&ctx->dsi->dev, "Generic read 0x04: ret=%d id=%02x %02x %02x\n",
-    //          ret, id[0], id[1], id[2]);
-    // }
-    // /* === Test 4: Generic read power mode === */
-    // {
-    //     u8 cmd = 0x0A;
-    //     ret = mipi_dsi_generic_read(ctx->dsi, &cmd, 1, &power_mode, 1);
-    //     dev_info(&ctx->dsi->dev, "Generic read 0x0A: ret=%d val=0x%02x\n",
-    //          ret, power_mode);
-    // }
-
-	/* 6. Init sequence */
 	ret = vs035zsm_init_sequence(ctx);
 	if (ret) {
 		dev_err(dev, "Init sequence failed: %d\n", ret);
 		return ret;
 	}
 
-	/* Select user command page before display on */
 	mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
 
-	
-
-	/* Display On */
 	ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set display on: %d\n", ret);
 		return ret;
 	}
-
-	ret = mipi_dsi_turn_on_peripheral(ctx->dsi);
-	if (ret) {
-		dev_err(dev, "failed to turn on peripheral\n");
-
-	}
-
-	{
-    u8 power_mode = 0;
-    u8 display_status[5] = {0};
-    u8 signal_mode = 0;
-    u8 pixel_fmt = 0;
-
-    /* 0x0A: Power mode — expect 0x14 after sleep-out (sleep out + normal mode) */
-    mipi_dsi_dcs_read(ctx->dsi, 0x0A, &power_mode, 1);
-    dev_info(dev, "Power mode (0x0A): 0x%02x\n", power_mode);
-
-    /* 0x0E: Display self-diagnostic */
-    mipi_dsi_dcs_read(ctx->dsi, 0x0E, &signal_mode, 1);
-    dev_info(dev, "Self-diag (0x0E): 0x%02x\n", signal_mode);
-
-    /* 0x0C: Pixel format — shows what panel thinks it's receiving */
-    mipi_dsi_dcs_read(ctx->dsi, 0x0C, &pixel_fmt, 1);
-    dev_info(dev, "Pixel format (0x0C): 0x%02x\n", pixel_fmt);
-	/* 0x09: Display status — 5 bytes, shows detailed panel state */
-	mipi_dsi_dcs_read(ctx->dsi, 0x09, display_status, 5);
-	dev_info(dev, "Display status (0x09): %02x %02x %02x %02x %02x\n",
-         display_status[0], display_status[1], display_status[2],
-         display_status[3], display_status[4]);
-	}
-
-	{
-    u8 dsc_en = 0xFF;
-    u8 bb_val = 0xFF;
-
-    mipi_dsi_dcs_write(ctx->dsi, 0xFF, (u8[]){0x10}, 1);
-    msleep(5);
-    mipi_dsi_dcs_read(ctx->dsi, 0xC0, &dsc_en, 1);
-    mipi_dsi_dcs_read(ctx->dsi, 0xBB, &bb_val, 1);
-    dev_info(dev, "DSC enable (0xC0): 0x%02x  Compression (0xBB): 0x%02x\n",
-             dsc_en, bb_val);
-	}
-
-	{
-    /* Set column address: 0 to 1439 */
-    u8 caset[] = {0x00, 0x00, 0x05, 0x9F};
-    mipi_dsi_dcs_write(ctx->dsi, 0x2A, caset, 4);
-
-    /* Set page address: 0 to 1599 */
-    u8 paset[] = {0x00, 0x00, 0x06, 0x3F};
-    mipi_dsi_dcs_write(ctx->dsi, 0x2B, paset, 4);
-
-    /* Write a small block of white pixels via memory write */
-    u8 pixels[64];
-    memset(pixels, 0xFF, sizeof(pixels));
-    mipi_dsi_dcs_write(ctx->dsi, 0x2C, pixels, sizeof(pixels));
-    dev_info(dev, "Sent test pixels via command mode\n");
-	}
-
-
-
-	/* SSD2828 reference: wait >= 40ms + 40ms */
 	msleep(80);
+
+	/* Debug reads */
+	{
+		u8 power_mode = 0;
+		u8 display_status[5] = {0};
+		u8 dsc_en = 0xFF;
+		u8 bb_val = 0xFF;
+
+		mipi_dsi_dcs_read(ctx->dsi, 0x0A, &power_mode, 1);
+		dev_info(dev, "Power mode (0x0A): 0x%02x\n", power_mode);
+
+		mipi_dsi_dcs_read(ctx->dsi, 0x09, display_status, 5);
+		dev_info(dev, "Display status (0x09): %02x %02x %02x %02x %02x\n",
+			 display_status[0], display_status[1],
+			 display_status[2], display_status[3],
+			 display_status[4]);
+
+		mipi_dsi_dcs_read(ctx->dsi, 0xC0, &dsc_en, 1);
+		mipi_dsi_dcs_read(ctx->dsi, 0xBB, &bb_val, 1);
+		dev_info(dev, "DSC (0xC0): 0x%02x  Compression (0xBB): 0x%02x\n",
+			 dsc_en, bb_val);
+	}
 
 	ctx->enabled = true;
 	dev_info(dev, "Display enabled\n");
@@ -489,7 +410,7 @@ static int vs035zsm_get_modes(struct drm_panel *panel,
 	 *   In burst mode this is fine for ~169 Mpix/s active + blanking
 	 */
 	static const struct drm_display_mode mode = {
-		.clock       = 84624,
+		.clock       = 84648,
 		.hdisplay    = 1440,
 		.hsync_start = 1440 + 80,
 		.hsync_end   = 1440 + 80 + 40,
@@ -502,6 +423,22 @@ static int vs035zsm_get_modes(struct drm_panel *panel,
 		.height_mm   = 66,
 		.type        = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 	};
+
+	// static const struct drm_display_mode mode = {
+	// 	.clock       = 169296, 
+	// 	.hdisplay    = 1440,
+	// 	.hsync_start = 1440 + 80,
+	// 	.hsync_end   = 1440 + 80 + 40,
+	// 	.htotal      = 1440 + 80 + 40 + 80,
+	// 	.vdisplay    = 1600,
+	// 	.vsync_start = 1600 + 40,
+	// 	.vsync_end   = 1600 + 40 + 40,
+	// 	.vtotal      = 1600 + 40 + 40 + 40,
+	// 	.width_mm    = 59,
+	// 	.height_mm   = 66,
+	// 	// .flags       = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+	// 	.type        = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+	// };
 	struct drm_display_mode *m;
 
 	m = drm_mode_duplicate(connector->dev, &mode);
@@ -613,12 +550,7 @@ static int vs035zsm_probe(struct mipi_dsi_device *dsi)
 			| MIPI_DSI_MODE_VIDEO_BURST
 			| MIPI_DSI_MODE_LPM;
 	// dsi->mode_flags = MIPI_DSI_MODE_LPM;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO
-				| MIPI_DSI_MODE_VIDEO_BURST
-				| MIPI_DSI_MODE_LPM
-				| MIPI_DSI_CLOCK_NON_CONTINUOUS;
-	// dsi->hs_rate    = 700000000;
-	// dsi->lp_rate    = 1000000;
+
 
 	drm_panel_init(&ctx->panel, dev, &vs035zsm_panel_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
