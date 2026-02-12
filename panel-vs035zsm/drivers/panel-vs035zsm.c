@@ -92,122 +92,146 @@ static int vs035zsm_tps65132_check_and_program(struct vs035zsm *ctx)
 	return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Panel init sequence — ported from VS035ZSM_start()                 */
-/* All commands sent in LP mode (host handles this via MODE_LPM flag) */
-/* ------------------------------------------------------------------ */
+// /* ------------------------------------------------------------------ */
+// /* Panel init sequence — ported from VS035ZSM_start()                 */
+// /* All commands sent in LP mode (host handles this via MODE_LPM flag) */
+// /* ------------------------------------------------------------------ */
+// static int vs035zsm_init_sequence(struct vs035zsm *ctx)
+// {
+// 	struct mipi_dsi_device *dsi = ctx->dsi;
+// 	struct device *dev = &dsi->dev;
+// 	int ret;
+
+// 	dev_info(dev, "vs035zsm_init_sequence\n");
+
+// 	/* --- HSSRAM parameter (page 0xE0) --- */
+// 	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0xE0}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);  /* RELOAD */
+// 	mipi_dsi_dcs_write(dsi, 0x53, (u8[]){0x22}, 1);
+
+// 	/* --- CDM2 settings (page 0x25) --- */
+// 	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x25}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0x65, (u8[]){0x01}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0x66, (u8[]){0x50}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0x67, (u8[]){0x55}, 1);  /* 10% duty cycle setting */
+// 	mipi_dsi_dcs_write(dsi, 0xC4, (u8[]){0x90}, 1);
+
+// 	/* --- Page 0x26 settings --- */
+// 	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x26}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0x02, (u8[]){0xB5}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0x4D, (u8[]){0x8B}, 1);
+
+// 	/* --- User command set (page 0x10) --- */
+// 	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x10}, 1);
+// 	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
+
+// 	/* VESA DSC setting */
+// 	// mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x80}, 1); // original, seems to enable DSC
+// 	mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+
+// 	/*
+// 	 * NOTE: These two generic long writes were commented out in the
+// 	 * SSD2828 reference code. Including them here since they appear
+// 	 * to be DSC-related config. Remove if display misbehaves.
+// 	 *
+// 	 * 0x3B with payload {0x00, 0x0A, 0x00, 0x0A}
+// 	 * 0xBE with payload {0x00, 0x0A, 0x00, 0x0A}
+// 	 */
+// 	// mipi_dsi_generic_write(dsi, (u8[]){0x3B, 0x00, 0x0A, 0x00, 0x0A}, 5);
+// 	// mipi_dsi_generic_write(dsi, (u8[]){0xBE, 0x00, 0x0A, 0x00, 0x0A}, 5);
+
+// 	/* Compression / stream config */
+// 	// mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x13}, 1); // original, seems to enable DSC
+// 	mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+
+// 	/*
+// 	 * BA register: 0x30 = dual port, 0x07 = single port
+// 	 * Using single port for our setup.
+// 	 */
+// 	mipi_dsi_dcs_write(dsi, 0xBA, (u8[]){0x07}, 1);
+
+// 	/* Tear effect on (TE pin output) */
+// 	mipi_dsi_dcs_write(dsi, 0x35, (u8[]){0x00}, 1);
+
+// 	/* Address mode: normal scan */
+// 	mipi_dsi_dcs_write(dsi, 0x36, (u8[]){0x00}, 1);
+
+// 	/*
+// 	 * Page address set (0x2B): rows 0 to 1600 (0x0640)
+// 	 * The SSD2828 reference labels this "PARTIAL_RES_X" but
+// 	 * 0x2B is PASET which sets the vertical range.
+// 	 */
+// 	{
+// 		u8 payload[] = {0x00, 0x00, 0x06, 0x40};
+// 		// mipi_dsi_dcs_write(dsi, 0x2B, payload, 4);
+// 	}
+
+// 	/* In init sequence, after page 0x10 select and RELOAD */
+// 	{
+// 		u8 readback = 0xFF;
+
+// 		/* Try to disable DSC */
+// 		mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+// 		msleep(10);
+// 		mipi_dsi_dcs_read(dsi, 0xC0, &readback, 1);
+// 		dev_info(dev, "0xC0 after write 0x00: 0x%02x\n", readback);
+
+// 		mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+// 		msleep(10);
+// 		mipi_dsi_dcs_read(dsi, 0xBB, &readback, 1);
+// 		dev_info(dev, "0xBB after write 0x03: 0x%02x\n", readback);
+// 	}
+
+// 	/* Also read compression mode via standard DCS command */
+// 	{
+// 		u8 comp_mode = 0xFF;
+// 		mipi_dsi_dcs_read(dsi, 0x03, &comp_mode, 1);
+// 		dev_info(dev, "Get compression mode for DCS (0x03): 0x%02x\n", comp_mode);
+// 	}
+
+// 	{
+// 		u8 ba_val = 0xFF;
+// 		mipi_dsi_dcs_read(dsi, 0xBA, &ba_val, 1);
+// 		dev_info(dev, "Port config (0xBA): 0x%02x\n", ba_val);
+// 	}
+
+// 	/* Sleep Out */
+// 	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+// 	if (ret < 0) {
+// 		dev_err(dev, "Failed to exit sleep mode: %d\n", ret);
+// 		return ret;
+// 	}
+
+// 	/* SSD2828 reference waits 200ms here */
+// 	msleep(200);
+
+// 	return 0;
+// }
+
 static int vs035zsm_init_sequence(struct vs035zsm *ctx)
 {
-	struct mipi_dsi_device *dsi = ctx->dsi;
-	struct device *dev = &dsi->dev;
-	int ret;
+    struct mipi_dsi_device *dsi = ctx->dsi;
+    int ret;
 
-	dev_info(dev, "vs035zsm_init_sequence\n");
+    mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x10}, 1);
+    mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
 
-	/* --- HSSRAM parameter (page 0xE0) --- */
-	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0xE0}, 1);
-	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);  /* RELOAD */
-	mipi_dsi_dcs_write(dsi, 0x53, (u8[]){0x22}, 1);
+    mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
+    mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
+    mipi_dsi_dcs_write(dsi, 0xBA, (u8[]){0x07}, 1);
 
-	/* --- CDM2 settings (page 0x25) --- */
-	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x25}, 1);
-	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
-	mipi_dsi_dcs_write(dsi, 0x65, (u8[]){0x01}, 1);
-	mipi_dsi_dcs_write(dsi, 0x66, (u8[]){0x50}, 1);
-	mipi_dsi_dcs_write(dsi, 0x67, (u8[]){0x55}, 1);  /* 10% duty cycle setting */
-	mipi_dsi_dcs_write(dsi, 0xC4, (u8[]){0x90}, 1);
+    mipi_dsi_dcs_write(dsi, 0x36, (u8[]){0x00}, 1);
+    mipi_dsi_dcs_write(dsi, 0x3A, (u8[]){0x77}, 1);
+    mipi_dsi_dcs_write(dsi, 0x35, (u8[]){0x00}, 1);
 
-	/* --- Page 0x26 settings --- */
-	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x26}, 1);
-	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
-	mipi_dsi_dcs_write(dsi, 0x02, (u8[]){0xB5}, 1);
-	mipi_dsi_dcs_write(dsi, 0x4D, (u8[]){0x8B}, 1);
+    ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+    if (ret < 0)
+        return ret;
+    msleep(120);
 
-	/* --- User command set (page 0x10) --- */
-	mipi_dsi_dcs_write(dsi, 0xFF, (u8[]){0x10}, 1);
-	mipi_dsi_dcs_write(dsi, 0xFB, (u8[]){0x01}, 1);
-
-	/* VESA DSC setting */
-	// mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x80}, 1); // original, seems to enable DSC
-	mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
-
-	/*
-	 * NOTE: These two generic long writes were commented out in the
-	 * SSD2828 reference code. Including them here since they appear
-	 * to be DSC-related config. Remove if display misbehaves.
-	 *
-	 * 0x3B with payload {0x00, 0x0A, 0x00, 0x0A}
-	 * 0xBE with payload {0x00, 0x0A, 0x00, 0x0A}
-	 */
-	// mipi_dsi_generic_write(dsi, (u8[]){0x3B, 0x00, 0x0A, 0x00, 0x0A}, 5);
-	// mipi_dsi_generic_write(dsi, (u8[]){0xBE, 0x00, 0x0A, 0x00, 0x0A}, 5);
-
-	/* Compression / stream config */
-	// mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x13}, 1); // original, seems to enable DSC
-	mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
-
-	/*
-	 * BA register: 0x30 = dual port, 0x07 = single port
-	 * Using single port for our setup.
-	 */
-	mipi_dsi_dcs_write(dsi, 0xBA, (u8[]){0x07}, 1);
-
-	/* Tear effect on (TE pin output) */
-	mipi_dsi_dcs_write(dsi, 0x35, (u8[]){0x00}, 1);
-
-	/* Address mode: normal scan */
-	mipi_dsi_dcs_write(dsi, 0x36, (u8[]){0x00}, 1);
-
-	/*
-	 * Page address set (0x2B): rows 0 to 1600 (0x0640)
-	 * The SSD2828 reference labels this "PARTIAL_RES_X" but
-	 * 0x2B is PASET which sets the vertical range.
-	 */
-	{
-		u8 payload[] = {0x00, 0x00, 0x06, 0x40};
-		// mipi_dsi_dcs_write(dsi, 0x2B, payload, 4);
-	}
-
-	/* In init sequence, after page 0x10 select and RELOAD */
-	{
-		u8 readback = 0xFF;
-
-		/* Try to disable DSC */
-		mipi_dsi_dcs_write(dsi, 0xC0, (u8[]){0x00}, 1);
-		msleep(10);
-		mipi_dsi_dcs_read(dsi, 0xC0, &readback, 1);
-		dev_info(dev, "0xC0 after write 0x00: 0x%02x\n", readback);
-
-		mipi_dsi_dcs_write(dsi, 0xBB, (u8[]){0x03}, 1);
-		msleep(10);
-		mipi_dsi_dcs_read(dsi, 0xBB, &readback, 1);
-		dev_info(dev, "0xBB after write 0x03: 0x%02x\n", readback);
-	}
-
-	/* Also read compression mode via standard DCS command */
-	{
-		u8 comp_mode = 0xFF;
-		mipi_dsi_dcs_read(dsi, 0x03, &comp_mode, 1);
-		dev_info(dev, "Get compression mode for DCS (0x03): 0x%02x\n", comp_mode);
-	}
-
-	{
-		u8 ba_val = 0xFF;
-		mipi_dsi_dcs_read(dsi, 0xBA, &ba_val, 1);
-		dev_info(dev, "Port config (0xBA): 0x%02x\n", ba_val);
-	}
-
-	/* Sleep Out */
-	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to exit sleep mode: %d\n", ret);
-		return ret;
-	}
-
-	/* SSD2828 reference waits 200ms here */
-	msleep(200);
-
-	return 0;
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -409,20 +433,61 @@ static int vs035zsm_get_modes(struct drm_panel *panel,
 	 *   RGB888 = 24 bpp → 3648 / 24 = 152 Mpix/s effective
 	 *   In burst mode this is fine for ~169 Mpix/s active + blanking
 	 */
+	#define VS035ZSM_HDISPLAY    1440
+	#define VS035ZSM_HFP         80
+	#define VS035ZSM_HSYNC       40
+	#define VS035ZSM_HBP         80
+	#define VS035ZSM_VDISPLAY    1600
+	#define VS035ZSM_VFP         20
+	#define VS035ZSM_VSYNC       40
+	#define VS035ZSM_VBP         20
+	#define VS035ZSM_FPS         20
+
+	#define VS035ZSM_HTOTAL      (VS035ZSM_HDISPLAY + VS035ZSM_HFP + VS035ZSM_HSYNC + VS035ZSM_HBP)
+	#define VS035ZSM_VTOTAL      (VS035ZSM_VDISPLAY + VS035ZSM_VFP + VS035ZSM_VSYNC + VS035ZSM_VBP)
+	#define VS035ZSM_CLOCK       (VS035ZSM_HTOTAL * VS035ZSM_VTOTAL * VS035ZSM_FPS / 1000)
+
 	static const struct drm_display_mode mode = {
-		.clock       = 84648,
-		.hdisplay    = 1440,
-		.hsync_start = 1440 + 80,
-		.hsync_end   = 1440 + 80 + 40,
-		.htotal      = 1440 + 80 + 40 + 80,
-		.vdisplay    = 1600,
-		.vsync_start = 1600 + 40,
-		.vsync_end   = 1600 + 40 + 40,
-		.vtotal      = 1600 + 40 + 40 + 40,
+		.clock       = VS035ZSM_CLOCK,
+		.hdisplay    = VS035ZSM_HDISPLAY,
+		.hsync_start = VS035ZSM_HDISPLAY + VS035ZSM_HFP,
+		.hsync_end   = VS035ZSM_HDISPLAY + VS035ZSM_HFP + VS035ZSM_HSYNC,
+		.htotal      = VS035ZSM_HTOTAL,
+		.vdisplay    = VS035ZSM_VDISPLAY,
+		.vsync_start = VS035ZSM_VDISPLAY + VS035ZSM_VFP,
+		.vsync_end   = VS035ZSM_VDISPLAY + VS035ZSM_VFP + VS035ZSM_VSYNC,
+		.vtotal      = VS035ZSM_VTOTAL,
 		.width_mm    = 59,
 		.height_mm   = 66,
 		.type        = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 	};
+
+	// static const struct drm_display_mode mode = {
+	// 	/* 
+	// 	 * Recalculated Clock for 60Hz:
+	// 	 * Htotal (1720) * Vtotal (1640) * 60Hz = 169,248 kHz 
+	// 	 */
+	// 	.clock       = 169296,
+		
+	// 	/* Horizontal (formerly Vertical) */
+	// 	.hdisplay    = 1600,
+	// 	.hsync_start = 1600 + 40,      /* Was VFP */
+	// 	.hsync_end   = 1600 + 40 + 40, /* Was VSync Length */
+	// 	.htotal      = 1600 + 40 + 40 + 40, /* Was VBP */
+		
+	// 	/* Vertical (formerly Horizontal) */
+	// 	.vdisplay    = 1440,
+	// 	.vsync_start = 1440 + 80,      /* Was HFP */
+	// 	.vsync_end   = 1440 + 80 + 40, /* Was HSync Length */
+	// 	.vtotal      = 1440 + 80 + 40 + 80, /* Was HBP */
+		
+	// 	/* Physical Dimensions Swapped */
+	// 	.width_mm    = 66,
+	// 	.height_mm   = 59,
+		
+	// 	.type        = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+	// };
+
 
 	// static const struct drm_display_mode mode = {
 	// 	.clock       = 169296, 
@@ -547,7 +612,7 @@ static int vs035zsm_probe(struct mipi_dsi_device *dsi)
 	dsi->lanes      = 4;
 	dsi->format     = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO
-			| MIPI_DSI_MODE_VIDEO_BURST
+			// | MIPI_DSI_MODE_VIDEO_BURST
 			| MIPI_DSI_MODE_LPM;
 	// dsi->mode_flags = MIPI_DSI_MODE_LPM;
 
